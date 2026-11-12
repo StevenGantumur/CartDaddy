@@ -1,55 +1,92 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 
-import LotMap from "./Components/LotMap";
+import LotMap, { MapLegend } from "./Components/LotMap";
+import JobPanel from "./Components/JobPanel";
+import FleetCard from "./Components/FleetCard";
+import RouteSteps from "./Components/RouteSteps";
 import CorralDetail from "./Components/CorralDetail";
-import UpdateForm from "./Components/UpdateForm";
 import LoginForm from "./Components/LoginForm";
+import Sheet from "./Components/Sheet";
 import Analytics from "./Components/Analytics";
 import Disclaimer from "./Components/Disclaimer";
+import { formatTime } from "./format";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001";
 
-const JOB = {
-  restock: { label: "Restock the storefront", tone: "text-signal-stop" },
-  collection: { label: "Collection sweep", tone: "text-signal-watch" },
-  idle: { label: "Nothing urgent", tone: "text-signal-go" },
-  delivery: { label: "Delivery run", tone: "text-signal-route" },
-  full: { label: "Bay already full", tone: "text-signal-go" },
+// The iPad sits at the cart base all shift, so the lot refreshes itself
+// instead of waiting for someone to reload the page.
+const REFRESH_MS = 30_000;
+
+// The current view lives in the URL hash (#/analytics), so a refresh keeps you
+// where you were, the back button works, and a view can be linked to directly.
+const VIEWS = [
+  { id: "dashboard", label: "Dashboard" },
+  { id: "analytics", label: "Analytics" },
+];
+const viewFromHash = () => (window.location.hash === "#/analytics" ? "analytics" : "dashboard");
+const subscribeToHash = (onChange) => {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
 };
 
 function App() {
+  const view = useSyncExternalStore(subscribeToHash, viewFromHash);
+
   const [lot, setLot] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
-  const [selected, setSelected] = useState(null);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [selected, setSelected] = useState(null); // corral whose sheet is open
 
   const [route, setRoute] = useState(null);
+  const [routeStale, setRouteStale] = useState(false);
   const [routeLoading, setRouteLoading] = useState(false);
   const [routeError, setRouteError] = useState(null);
   const [simulating, setSimulating] = useState(false);
   const [depot, setDepot] = useState(null); // null = let the API choose the job
 
-  const [view, setView] = useState("dashboard");
-
   const [token, setToken] = useState(() => localStorage.getItem("token"));
   const [user, setUser] = useState(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+
+  // Every new copy of the lot comes through here, whether it came from the
+  // refresh timer, a simulation, or a count update. If the counts moved since
+  // the route was planned, the route gets flagged as out of date.
+  const countsKey = useRef(null);
+  const applyLot = useCallback((data) => {
+    const key = JSON.stringify(data.counts);
+    if (countsKey.current !== null && key !== countsKey.current) setRouteStale(true);
+    countsKey.current = key;
+    setLot(data);
+    setLastUpdated(new Date());
+    setLoadError(null);
+  }, []);
 
   const loadLot = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
     try {
       const res = await fetch(`${API_BASE}/api/corrals`);
       if (!res.ok) throw new Error(`Server responded ${res.status}`);
-      setLot(await res.json());
+      applyLot(await res.json());
     } catch (err) {
+      // Data already on screen stays up and is marked stale instead of being
+      // replaced by an error, so one network blip doesn't blank the iPad.
       setLoadError(`Could not reach the server at ${API_BASE}. ${err.message}`);
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  }, [applyLot]);
 
+  // Refreshes on every view, so the live status in the header stays truthful
+  // wherever you are.
   useEffect(() => {
     loadLot();
+    const refresh = () => {
+      if (!document.hidden) loadLot();
+    };
+    const timer = setInterval(refresh, REFRESH_MS);
+    // Coming back to the tab (or waking the iPad) refreshes immediately.
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [loadLot]);
 
   // A stored token may have expired while the tab was closed, so it is checked
@@ -70,6 +107,7 @@ function App() {
     localStorage.setItem("token", newToken);
     setToken(newToken);
     setUser(newUser);
+    setLoginOpen(false);
   };
 
   const handleLogout = () => {
@@ -78,16 +116,58 @@ function App() {
     setUser(null);
   };
 
+  // Each request gets a number and only the newest may write its result, so
+  // tapping two bays in quick succession can't leave the older answer on screen.
+  const planSeq = useRef(0);
+  const planRoute = useCallback(async (bay) => {
+    const seq = ++planSeq.current;
+    setRouteLoading(true);
+    setRouteError(null);
+    try {
+      const qs = bay ? `?depot=${encodeURIComponent(bay)}` : "";
+      const res = await fetch(`${API_BASE}/api/optimize-route${qs}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
+      if (seq !== planSeq.current) return;
+      setRoute({ ...data, plannedAt: new Date() });
+      setRouteStale(false);
+    } catch (err) {
+      if (seq !== planSeq.current) return;
+      setRoute(null);
+      setRouteError(`Could not plan a route. ${err.message}`);
+    } finally {
+      if (seq === planSeq.current) setRouteLoading(false);
+    }
+  }, []);
+
+  // Plan once as soon as the lot loads, so the screen already shows the next
+  // job when a worker walks up. After that, plans happen on request, so the
+  // route never changes under someone while they are reading it.
+  const autoPlanned = useRef(false);
+  useEffect(() => {
+    if (lot && !autoPlanned.current) {
+      autoPlanned.current = true;
+      planRoute(null);
+    }
+  }, [lot, planRoute]);
+
+  // Choosing a bay plans straight away: one tap instead of two.
+  const chooseBay = (bay) => {
+    setDepot(bay);
+    planRoute(bay);
+  };
+
   // Demo: randomise the whole lot, then immediately re-plan against it, so one
-  // click shows the counts, the map, and the routing decision all react together.
+  // tap shows the counts, the map, and the routing decision all react together.
   const simulateLot = async () => {
     setSimulating(true);
     setRouteError(null);
     try {
       const res = await fetch(`${API_BASE}/api/simulate`, { method: "POST" });
-      if (!res.ok) throw new Error(`Server responded ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
       await loadLot();
-      await planRoute();
+      await planRoute(depot);
     } catch (err) {
       setRouteError(`Could not simulate. ${err.message}`);
     } finally {
@@ -95,278 +175,219 @@ function App() {
     }
   };
 
-  const planRoute = async () => {
-    setRouteLoading(true);
-    setRouteError(null);
-    try {
-      const qs = depot ? `?depot=${encodeURIComponent(depot)}` : "";
-      const res = await fetch(`${API_BASE}/api/optimize-route${qs}`);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Server responded ${res.status}`);
-      setRoute(data);
-    } catch (err) {
-      setRoute(null);
-      setRouteError(`Could not plan a route. ${err.message}`);
-    } finally {
-      setRouteLoading(false);
-    }
-  };
-
+  const stops = route?.optimizedRoute || [];
   const selectedCorral = lot?.corrals.find((c) => c.id === selected);
+  const selectedIndex = selected ? stops.indexOf(selected) : -1;
+  const selectedStop = selectedIndex > 0 && selectedIndex < stops.length - 1 ? selectedIndex : null;
+  // Bays listed left to right, in the same order they sit on the map.
+  const bays = lot ? lot.corrals.filter((c) => c.type === "supply").sort((a, b) => a.x - b.x) : [];
+  const busy = routeLoading || simulating;
 
   return (
     <div className="min-h-screen">
-      <header className="border-b border-ink-600 bg-ink-800/60 backdrop-blur sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <span className="w-2.5 h-2.5 rounded-full bg-signal-go animate-pulse" />
-            <div>
-              <h1 className="text-lg font-bold tracking-tight">CartDaddy</h1>
-              <p className="text-xs text-haze-500">X · live lot operations</p>
-            </div>
-          </div>
-          <nav className="flex gap-1.5 ml-auto mr-4">
-            {["dashboard", "analytics"].map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={`cut-sm px-3 py-1.5 text-sm font-medium capitalize transition ${
-                  view === v
-                    ? "bg-ink-600 text-haze-100"
-                    : "text-haze-500 hover:text-haze-100"
-                }`}
+      <header className="sticky top-0 z-20 border-b border-ink-600 bg-ink-950">
+        <div className="mx-auto flex h-14 max-w-7xl items-stretch gap-6 px-4 sm:px-6">
+          <a href="#/dashboard" className="flex shrink-0 items-center gap-2 text-lg font-semibold">
+            <Logo />
+            CartDaddy
+          </a>
+
+          <nav aria-label="Views" className="flex items-stretch">
+            {VIEWS.map((v) => (
+              <a
+                key={v.id}
+                href={`#/${v.id}`}
+                aria-current={view === v.id ? "page" : undefined}
+                className="tab"
               >
-                {v}
-              </button>
+                {v.label}
+              </a>
             ))}
           </nav>
 
-          {user ? (
-            <div className="text-right text-sm">
-              <p className="font-medium">{user.username}</p>
-              <button onClick={handleLogout} className="text-xs text-haze-500 hover:text-haze-100">
-                Log out
+          <div className="ml-auto flex items-center gap-4">
+            <LiveStatus lastUpdated={lastUpdated} error={loadError} />
+            {user ? (
+              <>
+                <span className="hidden md:inline text-sm text-haze-300">{user.username}</span>
+                <button onClick={handleLogout} className="chip">
+                  Log out
+                </button>
+              </>
+            ) : (
+              <button onClick={() => setLoginOpen(true)} className="chip">
+                Log in
               </button>
-            </div>
-          ) : (
-            <span className="text-xs text-haze-500">Viewing as guest</span>
-          )}
+            )}
+          </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-5">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-5 space-y-4">
         {view === "analytics" && <Analytics apiBase={API_BASE} />}
 
-        {view === "dashboard" && loadError && (
-          <div className="panel border-signal-stop/50 p-5">
-            <p className="font-semibold text-signal-stop">Unable to load lot data</p>
-            <p className="text-sm text-haze-300 mt-1">{loadError}</p>
-            <button
-              onClick={loadLot}
-              className="btn cut-sm mt-3 bg-signal-stop text-white text-sm"
-            >
+        {view === "dashboard" && !lot && loadError && (
+          <div className="panel panel-danger p-6" role="alert">
+            <p className="text-2xl font-semibold text-signal-stop-text">Can't load the lot</p>
+            <p className="text-base text-haze-300 mt-2">{loadError}</p>
+            <button onClick={loadLot} className="btn mt-5">
               Retry
             </button>
           </div>
         )}
 
-        {loading && !loadError && <p className="text-haze-500">Loading lot data…</p>}
+        {view === "dashboard" && !lot && !loadError && <DashboardSkeleton />}
 
-        {view === "dashboard" && lot && !loadError && (
+        {view === "dashboard" && lot && (
           <>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <Stat label="In building" value={lot.building.cartsInBuilding} highlight />
-              <Stat label="In lot" value={lot.building.cartsInLot} />
-              <Stat label="Fleet size" value={lot.building.fleetSize ?? "—"} />
-              <Stat
-                label="Unaccounted"
-                value={lot.building.unaccounted}
-                alert={lot.building.unaccounted !== 0}
-              />
-            </div>
-
-            <div className="grid lg:grid-cols-3 gap-5">
-              <section className="panel p-5 lg:col-span-2">
-                <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-                  <h2 className="label">Lot map</h2>
-                  <Legend />
+            {loadError && (
+              <div role="status" className="panel panel-warn p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-base">
+                    <span className="font-semibold text-signal-watch">Not updating. </span>
+                    <span className="text-haze-300">
+                      The server isn't answering, so these counts are from {formatTime(lastUpdated)}.
+                      Retrying every {REFRESH_MS / 1000} seconds.
+                    </span>
+                  </p>
+                  <button onClick={loadLot} className="chip">
+                    Retry now
+                  </button>
                 </div>
-                <LotMap
-                  counts={lot.counts}
-                  route={route?.optimizedRoute || []}
-                  selected={selected}
-                  onSelect={setSelected}
-                />
+              </div>
+            )}
+
+            {/* Landscape: next job and the fleet side by side, then the map at
+                full width so it is as large as possible, then the walking
+                order. Portrait: the same blocks stacked in that order. */}
+            <div className="grid gap-4 lg:grid-cols-12">
+              <JobPanel
+                className="lg:col-span-8"
+                route={route}
+                loading={routeLoading}
+                error={routeError}
+                stale={routeStale}
+                depot={depot}
+                bays={bays}
+                busy={busy}
+                simulating={simulating}
+                onChooseBay={chooseBay}
+                onPlan={() => planRoute(depot)}
+                onSimulate={simulateLot}
+              />
+
+              <FleetCard className="lg:col-span-4" building={lot.building} corralCount={lot.corrals.length} />
+
+              <section className="panel p-4 sm:p-5 lg:col-span-12" aria-labelledby="map-title">
+                <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3 mb-4">
+                  <div>
+                    <h2 id="map-title" className="text-lg font-semibold">
+                      Lot
+                    </h2>
+                    <p className="text-sm text-haze-300">Tap a corral to see it or update its count.</p>
+                  </div>
+                  <MapLegend routeActive={stops.length > 1} />
+                </div>
+                <LotMap counts={lot.counts} route={stops} selected={selected} onSelect={setSelected} />
               </section>
 
-              <div className="space-y-5">
-                <section className="panel p-5">
-                  <h2 className="label mb-3">Next job</h2>
-                  {/* Auto lets the API decide the job; naming a bay forces a
-                      delivery run to it. */}
-                  <div className="flex flex-wrap gap-1.5 mb-3">
-                    <BayButton active={depot === null} onClick={() => setDepot(null)} label="Auto" />
-                    {lot.corrals
-                      .filter((c) => c.type === "supply")
-                      .map((c) => (
-                        <BayButton
-                          key={c.id}
-                          active={depot === c.id}
-                          onClick={() => setDepot(c.id)}
-                          label={c.label || c.id}
-                        />
-                      ))}
-                  </div>
-
-                  <div className="flex gap-2">
-                    <button
-                      onClick={planRoute}
-                      disabled={routeLoading || simulating}
-                      className="btn cut-sm flex-1 py-2.5"
-                    >
-                      {routeLoading ? "Planning…" : "Plan Route"}
-                    </button>
-                    <button
-                      onClick={simulateLot}
-                      disabled={routeLoading || simulating}
-                      title="Randomise the lot to a plausible state, then re-plan"
-                      className="cut-sm px-3 py-2.5 bg-ink-700 text-haze-300 font-semibold
-                        hover:text-haze-100 disabled:opacity-40 disabled:cursor-not-allowed transition"
-                    >
-                      {simulating ? "Simulating…" : "Simulate"}
-                    </button>
-                  </div>
-                  {routeError && <p className="mt-3 text-sm text-signal-stop">{routeError}</p>}
-                  {route && <RouteResult route={route} />}
-                </section>
-
-                {selected ? (
-                  <CorralDetail
-                    apiBase={API_BASE}
-                    corralId={selected}
-                    corral={selectedCorral}
-                    count={lot.counts[selected] ?? 0}
-                    onClose={() => setSelected(null)}
-                  />
-                ) : (
-                  <section className="panel p-5">
-                    <h2 className="label mb-2">Corral detail</h2>
-                    <p className="text-sm text-haze-500">
-                      Select a corral on the map to see its count and recent history.
-                    </p>
-                  </section>
-                )}
-              </div>
+              <RouteSteps className="lg:col-span-12" route={route} lot={lot} onOpen={setSelected} />
             </div>
-
-            <section className="panel p-5">
-              <h2 className="label mb-3">Update a corral</h2>
-              {token ? (
-                <UpdateForm
-                  apiBase={API_BASE}
-                  token={token}
-                  corrals={lot.corrals}
-                  onUpdate={setLot}
-                  onAuthExpired={handleLogout}
-                />
-              ) : (
-                <LoginForm apiBase={API_BASE} onLogin={handleLogin} />
-              )}
-            </section>
           </>
         )}
+
         <Disclaimer />
       </main>
+
+      <Sheet
+        open={Boolean(selectedCorral)}
+        onClose={() => setSelected(null)}
+        label={selectedCorral ? `Corral ${selectedCorral.id}` : "Corral"}
+      >
+        {selectedCorral && (
+          <CorralDetail
+            apiBase={API_BASE}
+            corral={selectedCorral}
+            count={lot.counts[selectedCorral.id] ?? 0}
+            routeStop={selectedStop}
+            routeStops={Math.max(0, stops.length - 2)}
+            token={token}
+            onUpdate={applyLot}
+            onAuthExpired={handleLogout}
+            onLogin={handleLogin}
+            onClose={() => setSelected(null)}
+          />
+        )}
+      </Sheet>
+
+      <Sheet variant="center" open={loginOpen} onClose={() => setLoginOpen(false)} label="Log in">
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <h2 className="text-2xl font-semibold">Log in</h2>
+          <button onClick={() => setLoginOpen(false)} className="chip -mr-1 px-3" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M3 3 L13 13 M13 3 L3 13" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </button>
+        </div>
+        <LoginForm apiBase={API_BASE} onLogin={handleLogin} />
+      </Sheet>
     </div>
   );
 }
 
-function BayButton({ active, onClick, label }) {
+// The favicon's cart.
+function Logo() {
   return (
-    <button
-      onClick={onClick}
-      className={`cut-sm px-2.5 py-1 text-xs font-medium transition ${
-        active ? "bg-ink-600 text-haze-100" : "bg-ink-700 text-haze-500 hover:text-haze-100"
-      }`}
-    >
-      {label}
-    </button>
+    <svg width="24" height="24" viewBox="0 0 32 32" aria-hidden="true" className="shrink-0">
+      <g fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 6h3.5l3.2 13h13L26 9H8" />
+        <circle cx="12" cy="25.5" r="2" />
+        <circle cx="22" cy="25.5" r="2" />
+      </g>
+    </svg>
   );
 }
 
-function Legend() {
-  const items = [
-    ["bg-signal-go", "Healthy"],
-    ["bg-signal-watch", "Watch"],
-    ["bg-signal-stop", "Needs action"],
-  ];
+// Says when the numbers were last fetched. If the server stops answering, the
+// dot turns amber and the text says the numbers have stopped updating.
+function LiveStatus({ lastUpdated, error }) {
+  let state = { dot: "bg-signal-go", text: `Updated ${formatTime(lastUpdated)}` };
+  if (!lastUpdated) {
+    state = error
+      ? { dot: "bg-signal-stop", text: "Offline" }
+      : { dot: "bg-haze-500", text: "Connecting…" };
+  } else if (error) {
+    state = { dot: "bg-signal-watch", text: `Not updating since ${formatTime(lastUpdated)}` };
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-3 text-xs text-haze-300">
-      {items.map(([cls, text]) => (
-        <span key={text} className="flex items-center gap-1.5">
-          <i className={`w-2.5 h-2.5 rounded-sm ${cls} inline-block`} />
-          {text}
-        </span>
-      ))}
-      <span className="text-haze-500">lot red when full · storefront red when empty</span>
-    </div>
+    <p className="hidden items-center gap-2 text-sm text-haze-300 sm:flex">
+      <span aria-hidden="true" className={`h-2 w-2 rounded-full ${state.dot}`} />
+      {state.text}
+    </p>
   );
 }
 
-function Stat({ label, value, highlight, alert }) {
+// Same shapes as the real dashboard, so nothing jumps when the data arrives.
+function DashboardSkeleton() {
   return (
-    <div
-      className={`panel p-4 ${highlight ? "border-signal-route/40" : ""} ${
-        alert ? "border-signal-watch/50" : ""
-      }`}
-    >
-      <p className="label">{label}</p>
-      <p className="text-3xl font-bold tabular-nums mt-1">{value}</p>
-    </div>
-  );
-}
-
-function RouteResult({ route }) {
-  const job = JOB[route.job] || { label: route.job, tone: "text-haze-100" };
-
-  return (
-    <div className="mt-4 space-y-3">
-      <div>
-        <p className={`font-semibold ${job.tone}`}>{job.label}</p>
-        <p className="text-sm text-haze-300 mt-0.5">{route.reason}</p>
+    <div className="grid gap-4 lg:grid-cols-12" aria-busy="true">
+      <span className="sr-only">Loading lot data…</span>
+      <div className="panel p-6 lg:col-span-8">
+        <div className="skeleton h-3 w-24" />
+        <div className="skeleton h-12 w-3/4 mt-4" />
+        <div className="skeleton h-5 w-1/2 mt-3" />
+        <div className="skeleton h-11 w-full mt-8" />
       </div>
-
-      {route.optimizedRoute?.length > 0 && (
-        <>
-          <p className="font-mono text-sm break-words bg-ink-700 cut-sm p-3 leading-relaxed">
-            {route.optimizedRoute.join(" → ")}
-          </p>
-          <dl className="grid grid-cols-3 gap-2 text-center">
-            <Metric label="Stops" value={route.corralsCovered} />
-            <Metric
-              label="Distance"
-              value={route.totalDistance != null ? `${Math.round(route.totalDistance)} ft` : "—"}
-            />
-            <Metric label="Carts" value={route.cartsMoved ?? "—"} />
-          </dl>
-          <p className="text-[11px] text-haze-500 text-center">solver: {route.method}</p>
-        </>
-      )}
-
-      {route.degraded && (
-        <p className="text-sm text-signal-watch bg-signal-watch/10 border border-signal-watch/30 cut-sm p-3">
-          {route.note}
-        </p>
-      )}
-    </div>
-  );
-}
-
-function Metric({ label, value }) {
-  return (
-    <div className="bg-ink-700 cut-sm py-2">
-      <p className="text-lg font-bold tabular-nums">{value}</p>
-      <p className="text-[11px] text-haze-500">{label}</p>
+      <div className="panel p-6 lg:col-span-4">
+        <div className="skeleton h-3 w-24" />
+        <div className="skeleton h-2 w-full mt-5" />
+        <div className="skeleton h-24 w-full mt-5" />
+      </div>
+      <div className="panel p-5 lg:col-span-12">
+        <div className="skeleton h-3 w-24 mb-4" />
+        <div className="skeleton w-full aspect-[940/336]" />
+      </div>
     </div>
   );
 }

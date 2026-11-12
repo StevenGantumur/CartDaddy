@@ -3,122 +3,178 @@
 @tailwind utilities;
 
 @layer base {
-  body {
-    @apply text-haze-100 antialiased;
-    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  /* Keeps the sticky header from covering whatever the browser scrolls into
+     view, such as the field that just received keyboard focus. */
+  html {
+    scroll-padding-top: 5rem;
+  }
 
-    /* Faded charcoal: a soft pool of light in the middle falling off to near
-       black at the edges, over a fine brushed texture. Fixed so the glow stays
-       put while the page scrolls under it. */
-    background-color: #0b0b0b;
-    background-image:
-      repeating-linear-gradient(
-        92deg,
-        rgba(255, 255, 255, 0.014) 0px,
-        rgba(255, 255, 255, 0) 2px,
-        rgba(0, 0, 0, 0.02) 3px,
-        rgba(255, 255, 255, 0) 5px
-      ),
-      radial-gradient(
-        ellipse 70% 55% at 50% 42%,
-        #3d3d3d 0%,
-        #303030 22%,
-        #202020 48%,
-        #121212 74%,
-        #0a0a0a 100%
-      );
-    background-attachment: fixed;
-    min-height: 100vh;
+  /* While a sheet is open, the page behind it stays put. */
+  html:has(dialog[open]) {
+    overflow: hidden;
+  }
+
+  body {
+    @apply bg-ink-950 text-haze-100 antialiased;
+    font-feature-settings: "tnum" 1; /* tabular figures: counts don't jiggle as they change */
+  }
+
+  /* The app runs on an iPad at the cart base. `manipulation` drops the
+     double-tap-to-zoom gesture on controls, so a quick second tap registers as
+     a tap instead of zooming the page. The grey iOS tap flash is replaced by
+     each control's own :active state. */
+  a,
+  button,
+  select,
+  input,
+  label,
+  summary,
+  [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* One visible keyboard focus style for every control. */
+  :focus-visible {
+    outline: 2px solid theme(colors.signal.route);
+    outline-offset: 2px;
   }
 }
 
 @layer components {
-  /* Chamfered corners instead of radii. Two opposite corners are cut, which
-     reads as drafted equipment rather than a generic rounded card. The border
-     is the element's own background showing through a 1px inset, because
-     clip-path crops a real border away. */
+  /* Panels sit a shade lighter than the page, with only a hairline edge. */
   .panel {
-    --cut: 14px;
-    position: relative;
-    background: #3a3a3a;
-    clip-path: polygon(
-      var(--cut) 0,
-      100% 0,
-      100% calc(100% - var(--cut)),
-      calc(100% - var(--cut)) 100%,
-      0 100%,
-      0 var(--cut)
-    );
+    @apply rounded-xl border border-ink-600 bg-ink-800;
+  }
+  .panel-warn {
+    @apply border-signal-watch;
+  }
+  .panel-danger {
+    @apply border-signal-stop;
   }
 
-  .panel::before {
-    content: "";
-    position: absolute;
-    inset: 1px;
-    background: linear-gradient(#212121, #1a1a1a);
-    clip-path: polygon(
-      calc(var(--cut) - 1px) 0,
-      100% 0,
-      100% calc(100% - var(--cut) + 1px),
-      calc(100% - var(--cut) + 1px) 100%,
-      0 100%,
-      0 calc(var(--cut) - 1px)
-    );
-  }
-
-  /* Content has to sit above the ::before fill. */
-  .panel > * {
-    position: relative;
-    z-index: 1;
-  }
-
-  .cut-sm {
-    --cut: 8px;
-    clip-path: polygon(
-      var(--cut) 0,
-      100% 0,
-      100% calc(100% - var(--cut)),
-      calc(100% - var(--cut)) 100%,
-      0 100%,
-      0 var(--cut)
-    );
-  }
-
+  /* Small heading for a figure or a control: sentence case, no letter-spacing. */
   .label {
-    @apply text-[10px] font-semibold uppercase tracking-[0.18em] text-haze-500;
+    @apply text-sm font-medium text-haze-300;
   }
 
   .field {
-    @apply px-3 py-2 bg-ink-700 border border-ink-600 text-haze-100 rounded-none
-      placeholder:text-haze-500 focus:outline-none focus:border-signal-route;
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    @apply min-h-11 rounded-md border border-ink-600 bg-ink-700 px-3 py-2 text-base text-haze-100
+      placeholder:text-haze-500 focus:border-signal-route focus:outline-none focus:ring-1
+      focus:ring-signal-route aria-[invalid=true]:border-signal-stop;
   }
 
+  .field-label {
+    @apply mb-1.5 block text-sm font-medium text-haze-300;
+  }
+
+  /* The one primary action on a screen, in the accent. 44px is Apple's
+     minimum touch target. */
   .btn {
-    @apply px-4 py-2 font-semibold tracking-wide bg-signal-route text-ink-900
-      hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed transition;
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-accent px-5
+      text-[15px] font-semibold text-white transition-colors hover:bg-accent-hover
+      active:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* Secondary buttons: neutral, so they never compete with the primary. */
+  .chip {
+    @apply inline-flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-ink-600
+      bg-ink-700 px-4 text-[15px] font-medium text-haze-100 transition-colors hover:bg-ink-500
+      active:bg-ink-500 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* A segmented control, as on iOS: one track, the chosen option filled in
+     the accent. */
+  .segmented {
+    @apply inline-flex flex-wrap gap-1 rounded-lg bg-ink-700 p-1;
+  }
+  .segment {
+    @apply min-h-11 rounded-md px-4 text-[15px] font-medium text-haze-300 transition-colors
+      hover:text-haze-100 disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .segment[aria-pressed="true"] {
+    @apply bg-accent text-white hover:text-white;
+  }
+
+  /* Header tabs: the current view is underlined in the accent. */
+  .tab {
+    @apply inline-flex items-center border-b-2 border-transparent px-3 text-[15px] font-medium
+      text-haze-300 transition-colors hover:text-haze-100;
+  }
+  .tab[aria-current="page"] {
+    @apply border-signal-route text-haze-100;
+  }
+
+  .skeleton {
+    @apply rounded bg-ink-700;
+  }
+
+  /* Side sheet: a native <dialog> opened with showModal(), which traps focus,
+     closes on Escape, makes the page behind it inert, and hands focus back to
+     whatever opened it. */
+  .sheet {
+    margin: 0 0 0 auto;
+    padding: 0;
+    width: min(440px, 100vw);
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    border: 0;
+    border-left: 1px solid theme(colors.ink.600);
+    background: theme(colors.ink.800);
+    color: inherit;
+  }
+
+  .sheet-center {
+    margin: auto;
+    height: auto;
+    width: min(420px, calc(100vw - 2rem));
+    max-height: calc(100dvh - 2rem);
+    border: 1px solid theme(colors.ink.600);
+    border-radius: 0.75rem;
+  }
+
+  .sheet::backdrop {
+    background: rgb(0 0 0 / 0.55);
+  }
+
+  /* Slides in from the edge it is attached to, like an iPad sheet. */
+  .sheet[open] {
+    animation: sheet-in 0.2s ease-out;
+  }
+
+  .sheet-center[open] {
+    animation-name: fade-in;
   }
 }
 
-/* The route draws itself along the walking order so the sequence reads as a
-   path rather than a list of letters. */
-@keyframes route-draw {
+@keyframes sheet-in {
   from {
-    stroke-dashoffset: 4000;
-  }
-  to {
-    stroke-dashoffset: 0;
+    transform: translateX(24px);
+    opacity: 0;
   }
 }
 
-.route-line {
-  stroke-dasharray: 4000;
-  animation: route-draw 1.6s ease-out forwards;
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .route-line {
+  .sheet[open] {
     animation: none;
-    stroke-dashoffset: 0;
   }
+}
+
+/* Corrals on the map are focusable SVG groups. Selection is a solid white
+   outline, so keyboard focus uses a dashed one to stay distinguishable. */
+.corral:focus {
+  outline: none;
+}
+
+.corral:focus-visible .corral-box {
+  stroke: theme(colors.haze.100);
+  stroke-width: 4px;
+  stroke-dasharray: 6 4;
 }

@@ -26,39 +26,54 @@ function LoginForm({ apiBase, onLogin }) {
     }
   };
 
+  // Visible labels rather than placeholders: a placeholder disappears as soon as
+  // you start typing, which leaves an unlabeled box.
   return (
-    <form onSubmit={handleSubmit} className="space-y-3 max-w-sm">
+    <form onSubmit={handleSubmit} className="space-y-4 max-w-sm" noValidate>
       <p className="text-sm text-haze-300">Log in to update cart counts.</p>
-      <input
-        type="text"
-        placeholder="Username"
-        autoComplete="username"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        aria-label="Username"
-        className="field"
-      />
-      <input
-        type="password"
-        placeholder="Password"
-        autoComplete="current-password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        aria-label="Password"
-        className="field"
-      />
-      <button
-        type="submit"
-        disabled={submitting}
-        className="btn cut-sm"
-      >
-        {submitting ? "Logging in…" : "Log in"}
-      </button>
+      <div>
+        <label htmlFor="login-username" className="field-label">
+          Username
+        </label>
+        <input
+          id="login-username"
+          type="text"
+          autoComplete="username"
+          // iPad keyboards capitalize the first letter by default, which
+          // silently turns "steven" into "Steven" and fails the login.
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "login-error" : undefined}
+          className="field w-full"
+        />
+      </div>
+      <div>
+        <label htmlFor="login-password" className="field-label">
+          Password
+        </label>
+        <input
+          id="login-password"
+          type="password"
+          autoComplete="current-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "login-error" : undefined}
+          className="field w-full"
+        />
+      </div>
       {error && (
-        <p role="alert" className="text-sm text-signal-stop">
+        <p id="login-error" role="alert" className="text-sm text-signal-stop-text">
           {error}
         </p>
       )}
+      <button type="submit" disabled={submitting} className="btn w-full">
+        {submitting ? "Logging in…" : "Log in"}
+      </button>
     </form>
   );
 }
