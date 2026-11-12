@@ -1,12 +1,12 @@
 # Original Design Notes
 
 The first brainstorm for this project, kept for reference. Not everything here got
-built — see the Road Map and Current Limitations in the main README for where things
-actually stand.
+built — see "What's real and what isn't" and the road map in the [main README](../README.md)
+for where things actually stand.
 
 ## The Idea
 
-An application containing the information an X cart worker needs to do the job
+An application containing the information a Woodman's cart worker needs to do the job
 well, and to take some of the physical stress off.
 
 ## Planned Features
@@ -18,17 +18,20 @@ in each corral. *(Built, using OR-Tools. See `optimizer/`.)*
 automatically increase that corral's count. *(Not built. Counts are entered by hand.)*
 
 **CartDestination** — route carts based on which side of the building needs them,
-depending on how many carts are inside. *(Not built.)*
+depending on how many carts are inside. *(Partly built. The job picker restocks whichever
+storefront corral is running low, and a worker can choose the drop-off bay.)*
 
 **Weather API Integration** — pull weather periodically from something like
-OpenWeather. *(Not built. Still on the road map.)*
+OpenWeather. *(Built as a panel on the analytics view, proxied and cached by the API. Not
+yet fed into the prediction model.)*
 
 ## Planned UI
 
-* Weather view, so workers can see what is coming
+* Weather view, so workers can see what is coming *(built, on the analytics view)*
 * Clock
 * Shifts — when each worker is on *(stub only)*
-* RouteMapView — shows the route *(built as a text route, not a map)*
+* RouteMapView — shows the route *(built: drawn on the lot map, with a numbered walking
+  order below it)*
 * Live cart corral status, color coded by intensity *(built)*
 * Safety alerts — icy pavement, lightning risk, weather warnings *(not built)*
 * Performance metrics — carts moved, time efficiency vs. average, weekly goal progress
